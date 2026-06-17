@@ -8,7 +8,9 @@ export default function App() {
   const [countryRules, setCountryRules] = useState({
     'India': 10,
     'Singapore': 8,
-    'UAE': 9
+    'UAE': 9,
+    'US': 10,
+    'UK': 11
   });
   const [step, setStep] = useState('upload'); // upload, config, dashboard
   const [selectedRow, setSelectedRow] = useState(null);
@@ -70,41 +72,65 @@ export default function App() {
     const results = data.map((row, idx) => {
       const errors = [];
 
-      // Phone validation
+      // ===== PHONE VALIDATION (Country-specific) =====
       if (row.phone) {
         const country = row.country || 'India';
         const expectedDigits = countryRules[country];
         if (expectedDigits) {
           const digitsOnly = row.phone.toString().replace(/\D/g, '');
           if (digitsOnly.length !== expectedDigits) {
-            errors.push(`Invalid phone (expected ${expectedDigits} digits, got ${digitsOnly.length})`);
+            errors.push(`Invalid phone for ${country} (expected ${expectedDigits} digits, got ${digitsOnly.length})`);
           }
+        } else {
+          errors.push(`Unknown country: ${country}`);
         }
-      } else if (!row.phone) {
+      } else {
         errors.push('Missing phone');
       }
 
-      // Email validation
-      if (row.email) {
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(row.email)) {
-          errors.push('Invalid email format');
+      // ===== DATE VALIDATION =====
+      if (row.transaction_date) {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/; // YYYY-MM-DD format
+        if (!dateRegex.test(row.transaction_date)) {
+          errors.push('Invalid date format (use YYYY-MM-DD)');
+        } else {
+          // Check if date is valid
+          const [year, month, day] = row.transaction_date.split('-').map(Number);
+          if (month < 1 || month > 12) {
+            errors.push(`Invalid month: ${month}`);
+          }
+          if (day < 1 || day > 31) {
+            errors.push(`Invalid day: ${day}`);
+          }
         }
+      } else {
+        errors.push('Missing transaction_date');
       }
 
-      // Null checks for critical fields
-      if (!row.customer_id) errors.push('Missing customer_id');
-      if (!row.order_id) errors.push('Missing order_id');
-      if (!row.payment_mode) errors.push('Missing payment_mode');
-
-      // Type checks
+      // ===== AMOUNT VALIDATION =====
       if (row.amount) {
         const amount = parseFloat(row.amount);
         if (isNaN(amount)) {
           errors.push('Invalid amount (not numeric)');
         } else if (amount < 0) {
-          errors.push('Negative amount');
+          errors.push('Negative amount not allowed');
+        } else if (amount === 0) {
+          errors.push('Zero amount');
         }
+      } else {
+        errors.push('Missing amount');
+      }
+
+      // ===== REQUIRED FIELDS =====
+      if (!row.order_id) errors.push('Missing order_id');
+      if (!row.product_name) errors.push('Missing product_name');
+      if (!row.payment_mode) errors.push('Missing payment_mode');
+      if (!row.country) errors.push('Missing country');
+
+      // ===== PAYMENT MODE VALIDATION =====
+      const validPaymentModes = ['Card', 'UPI', 'Cash', 'Cheque', 'Bank Transfer'];
+      if (row.payment_mode && !validPaymentModes.includes(row.payment_mode)) {
+        errors.push(`Invalid payment_mode: ${row.payment_mode}`);
       }
 
       return {
@@ -200,7 +226,7 @@ Data: ${JSON.stringify(summary)}`
   const downloadCleanedCSV = () => {
     const cleaned = validationResults.filter(r => r.isValid);
     if (cleaned.length === 0) {
-      alert('No valid rows to download');
+      alert(`⚠️ No valid rows found!\n\nAll ${validationResults.length} rows have errors.\n\nFix the issues in your CSV and re-upload.\n\nMost common issues:\n• Missing phone numbers\n• Missing order IDs\n• Missing payment modes`);
       return;
     }
     const headers = Object.keys(cleaned[0]).filter(
@@ -216,22 +242,27 @@ Data: ${JSON.stringify(summary)}`
     a.href = url;
     a.download = 'cleaned_data.csv';
     a.click();
+    alert('✅ Clean data downloaded successfully!');
   };
 
   const downloadSampleCSV = () => {
     const sampleData = [
-      ['customer_id', 'order_id', 'email', 'phone', 'country', 'payment_mode', 'amount'],
-      ['C001', 'O001', 'john@gmail.com', '9876543210', 'India', 'credit_card', '1500'],
-      ['C002', 'O002', 'jane@example.com', '12345', 'India', 'debit_card', '2000'],
-      ['C003', 'O003', '', '98765432', 'Singapore', 'upi', '3000'],
-      ['C004', 'O004', 'invalid-email', '971234567', 'UAE', 'paypal', '2500'],
-      ['C005', '', 'bob@yahoo.com', '9123456789', 'India', 'credit_card', '-500']
-    ].map(row => row.join(',')).join('\n');
+      ['order_id', 'product_name', 'phone', 'country', 'payment_mode', 'transaction_date', 'amount'],
+      ['ORD001', 'iPhone 15', '9876543210', 'India', 'Card', '2025-06-01', '79999'],
+      ['ORD002', 'Samsung S24', '9123456789', 'India', 'UPI', '2025-06-02', '69999'],
+      ['ORD003', 'AirPods Pro', '12345', 'India', 'Cash', '2025-06-03', '24999'],  // Invalid phone (5 digits)
+      ['ORD004', 'MacBook Air', '87654321', 'Singapore', 'Card', '2025-06-04', '99999'],
+      ['ORD005', 'Apple Watch', '9876543210', 'India', '', '2025-06-05', '29999'],  // Missing payment_mode
+      ['ORD006', 'Dell XPS', '9123456789', 'India', 'UPI', '32-06-2025', '89999'],  // Invalid date
+      ['ORD007', 'Monitor', '12345678', 'Singapore', 'Card', '2025-06-07', '-5000'],  // Negative amount
+      ['ORD008', 'Keyboard', '87654321', 'Singapore', 'Cash', '2025-06-08', '4999'],
+      ['ORD009', 'Mouse', '987654321', 'India', 'UPI', '2025-06-09', '999'],  // Invalid phone (9 digits)
+    ].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
     const blob = new Blob([sampleData], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'sample_data.csv';
+    a.download = 'sample_transaction_data.csv';
     a.click();
   };
 
@@ -438,19 +469,22 @@ Data: ${JSON.stringify(summary)}`
                   </div>
                   <div className="inspector-content">
                     <div className="field">
-                      <strong>Customer ID:</strong> {selectedRow.customer_id || '(missing)'}
-                    </div>
-                    <div className="field">
                       <strong>Order ID:</strong> {selectedRow.order_id || '(missing)'}
                     </div>
                     <div className="field">
-                      <strong>Email:</strong> {selectedRow.email || '(missing)'}
+                      <strong>Product Name:</strong> {selectedRow.product_name || '(missing)'}
                     </div>
                     <div className="field">
                       <strong>Phone:</strong> {selectedRow.phone || '(missing)'}
                     </div>
                     <div className="field">
+                      <strong>Country:</strong> {selectedRow.country || '(missing)'}
+                    </div>
+                    <div className="field">
                       <strong>Payment Mode:</strong> {selectedRow.payment_mode || '(missing)'}
+                    </div>
+                    <div className="field">
+                      <strong>Transaction Date:</strong> {selectedRow.transaction_date || '(missing)'}
                     </div>
                     <div className="field">
                       <strong>Amount:</strong> {selectedRow.amount || '(missing)'}
@@ -480,11 +514,12 @@ Data: ${JSON.stringify(summary)}`
                   <thead>
                     <tr>
                       <th>Row</th>
-                      <th>ID</th>
-                      <th>Email</th>
+                      <th>Order ID</th>
+                      <th>Product</th>
                       <th>Phone</th>
+                      <th>Country</th>
                       <th>Status</th>
-                      <th>Errors</th>
+                      <th>Issues</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -496,9 +531,10 @@ Data: ${JSON.stringify(summary)}`
                         style={{ cursor: 'pointer' }}
                       >
                         <td>{row.row}</td>
-                        <td>{row.customer_id || '-'}</td>
-                        <td>{row.email || '-'}</td>
+                        <td style={{ fontWeight: 500 }}>{row.order_id || '-'}</td>
+                        <td>{row.product_name ? row.product_name.substring(0, 15) : '-'}</td>
                         <td>{row.phone || '-'}</td>
+                        <td>{row.country || '-'}</td>
                         <td>{row.isValid ? '✓ Valid' : '✕ Error'}</td>
                         <td>{row.errors.length}</td>
                       </tr>
