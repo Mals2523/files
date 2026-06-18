@@ -50,6 +50,15 @@ A web-based transaction data validation and processing platform built for the Xe
 npm install
 npm run dev
 ```
+## Sample Dataset
+
+A sample dataset (`sample_invalid.csv`) is included in the repository to demonstrate validation scenarios such as:
+
+- Invalid phone numbers
+- Invalid dates
+- Missing payment modes
+- Duplicate order IDs
+- Negative amounts
 
 ## Deployment
 
