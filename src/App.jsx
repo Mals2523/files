@@ -45,6 +45,15 @@ export default function App() {
     return true;
   };
 
+  const paymentModes = {};
+
+validationResults.forEach(row => {
+  if (row.payment_mode) {
+    paymentModes[row.payment_mode] =
+      (paymentModes[row.payment_mode] || 0) + 1;
+  }
+});
+
   // Get quality score badge
   const getQualityBadge = (score) => {
     if (score >= 90) return { emoji: '🟢', label: 'Excellent', color: '#10b981' };
@@ -330,8 +339,7 @@ ${summary.quality >= 80 ? 'Most transactions are valid and ready for processing.
       alert('No valid rows to export');
       return;
     }
-
-    const headers = Object.keys(cleaned[0]).filter(
+  const headers = Object.keys(cleaned[0]).filter(
       k => k !== 'errors' && k !== 'isValid' && k !== 'row'
     );
 
@@ -353,6 +361,61 @@ ${summary.quality >= 80 ? 'Most transactions are valid and ready for processing.
       a.click();
     }
   };
+
+  const downloadValidationReport = () => {
+  const total = validationResults.length;
+  const valid = validationResults.filter(r => r.isValid).length;
+  const quality = total > 0
+    ? Math.round((valid / total) * 100)
+    : 0;
+
+  const report = `
+XENO DATA VALIDATION REPORT
+===========================
+
+Generated On:
+${new Date().toLocaleString()}
+
+SUMMARY
+--------
+Total Rows: ${total}
+Valid Rows: ${valid}
+Invalid Rows: ${total - valid}
+Quality Score: ${quality}%
+
+ERROR BREAKDOWN
+---------------
+${Object.entries(errorTypes)
+  .map(([type, count]) => `${type}: ${count}`)
+  .join('\n')}
+
+${duplicateCount > 0 ? `Duplicate IDs: ${duplicateCount}` : ''}
+
+AI INSIGHTS
+-----------
+${aiInsights || 'No AI insights available'}
+
+RECOMMENDATIONS
+---------------
+• Fix validation errors
+• Remove duplicate records
+• Standardize phone and date formats
+• Re-upload cleaned dataset
+`;
+
+  const blob = new Blob(
+    [report],
+    { type: 'text/plain' }
+  );
+
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+
+  a.href = url;
+  a.download = 'validation_report.txt';
+  a.click();
+};
 
   const downloadSampleCSV = () => {
     const sampleData = [
@@ -539,6 +602,9 @@ ${summary.quality >= 80 ? 'Most transactions are valid and ready for processing.
         {step === 'dashboard' && (
           <>
             {/* KPI Cards with Badge */}
+
+            
+
             <div className="section">
               <h2 className="section-title">Validation Results</h2>
               <div className="kpi-grid">
@@ -569,6 +635,18 @@ ${summary.quality >= 80 ? 'Most transactions are valid and ready for processing.
                 </div>
               </div>
             </div>
+
+            <div className="section">
+  <h3>Payment Mode Summary</h3>
+
+  {Object.entries(paymentModes).map(
+    ([mode, count]) => (
+      <div key={mode}>
+        {mode}: {count}
+      </div>
+    )
+  )}
+</div>
 
             {/* AI Insights */}
             {(loadingInsights || aiInsights) && (
@@ -720,6 +798,11 @@ ${summary.quality >= 80 ? 'Most transactions are valid and ready for processing.
                 </button>
                 <button className="btn btn-info" onClick={downloadChunkedCSVs}>
                   📦 Download Chunked CSVs
+                </button>
+                <button className="btn btn-primary"
+                        onClick={downloadValidationReport}
+                >
+                     📄 Download Validation Report
                 </button>
               </div>
               
