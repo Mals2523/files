@@ -416,6 +416,64 @@
   }
 }
 
+/* Quality Badge */
+.quality-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.badge-emoji {
+  font-size: 24px;
+}
+
+.badge-percentage {
+  font-size: 24px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.badge-label {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Error Item with Suggestion */
+.error-item {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #fee2e2;
+}
+
+.error-item:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.suggestion {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 6px;
+  padding: 8px;
+  background: #fef2f2;
+  border-radius: 4px;
+  border-left: 3px solid #fca5a5;
+}
+
+/* Info Button */
+.btn-info {
+  background: #06b6d4;
+  color: white;
+  border-color: #06b6d4;
+}
+
+.btn-info:hover {
+  background: #0891b2;
+  border-color: #0891b2;
+}
+
 /* Responsive */
 @media (max-width: 640px) {
   .header h1 {

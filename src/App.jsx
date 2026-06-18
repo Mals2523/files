@@ -12,13 +12,64 @@ export default function App() {
     'US': 10,
     'UK': 11
   });
-  const [step, setStep] = useState('upload'); // upload, config, dashboard
+  const [step, setStep] = useState('upload');
   const [selectedRow, setSelectedRow] = useState(null);
   const [showAddRule, setShowAddRule] = useState(false);
   const [newCountry, setNewCountry] = useState('');
   const [newDigits, setNewDigits] = useState('');
   const [aiInsights, setAiInsights] = useState('');
   const [loadingInsights, setLoadingInsights] = useState(false);
+  const [chunkSize, setChunkSize] = useState(10);
+
+  // ===== HELPER FUNCTIONS =====
+
+  // Validate if date is actually valid (handles leap years, month days, etc)
+  const isValidDate = (dateStr) => {
+    const regex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!regex.test(dateStr)) return false;
+
+    const [year, month, day] = dateStr.split('-').map(Number);
+
+    // Check month range
+    if (month < 1 || month > 12) return false;
+
+    // Check day range based on month
+    const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    
+    // Check for leap year
+    const isLeapYear = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+    if (isLeapYear) daysInMonth[1] = 29;
+
+    if (day < 1 || day > daysInMonth[month - 1]) return false;
+
+    return true;
+  };
+
+  // Get quality score badge
+  const getQualityBadge = (score) => {
+    if (score >= 90) return { emoji: '🟢', label: 'Excellent', color: '#10b981' };
+    if (score >= 60) return { emoji: '🟡', label: 'Fair', color: '#f59e0b' };
+    return { emoji: '🔴', label: 'Poor', color: '#ef4444' };
+  };
+
+  // Get suggested fix for error
+  const getSuggestedFix = (error) => {
+    if (error.includes('Invalid phone')) {
+      const country = error.match(/for (\w+)/)?.[1];
+      if (country) {
+        const digits = countryRules[country];
+        return `${country} phone numbers must contain exactly ${digits} digits`;
+      }
+    }
+    if (error.includes('Invalid date')) return 'Use YYYY-MM-DD format with valid dates';
+    if (error.includes('Negative amount')) return 'Amount must be greater than 0';
+    if (error.includes('Invalid payment_mode')) return 'Use: Card, UPI, Cash, Cheque, or Bank Transfer';
+    if (error.includes('Missing')) return `This field is required for transaction processing`;
+    if (error.includes('Duplicate')) return 'Remove duplicate order to proceed';
+    return 'Please fix this field';
+  };
+
+  // ===== FILE HANDLERS =====
 
   const handleFileUpload = (e) => {
     const file = e.target.files?.[0];
@@ -68,11 +119,29 @@ export default function App() {
     }
   };
 
+  // ===== VALIDATION ENGINE =====
+
   const validateData = () => {
-    const results = data.map((row, idx) => {
+    const results = [];
+    const orderIds = {};
+    
+    // First pass: detect duplicates
+    data.forEach((row) => {
+      if (row.order_id) {
+        if (!orderIds[row.order_id]) {
+          orderIds[row.order_id] = [];
+        }
+        orderIds[row.order_id].push(row);
+      }
+    });
+
+    const duplicateOrderIds = Object.keys(orderIds).filter(id => orderIds[id].length > 1);
+
+    // Second pass: validate all rows
+    data.forEach((row, idx) => {
       const errors = [];
 
-      // ===== PHONE VALIDATION (Country-specific) =====
+      // ===== PHONE VALIDATION =====
       if (row.phone) {
         const country = row.country || 'India';
         const expectedDigits = countryRules[country];
@@ -90,18 +159,8 @@ export default function App() {
 
       // ===== DATE VALIDATION =====
       if (row.transaction_date) {
-        const dateRegex = /^\d{4}-\d{2}-\d{2}$/; // YYYY-MM-DD format
-        if (!dateRegex.test(row.transaction_date)) {
-          errors.push('Invalid date format (use YYYY-MM-DD)');
-        } else {
-          // Check if date is valid
-          const [year, month, day] = row.transaction_date.split('-').map(Number);
-          if (month < 1 || month > 12) {
-            errors.push(`Invalid month: ${month}`);
-          }
-          if (day < 1 || day > 31) {
-            errors.push(`Invalid day: ${day}`);
-          }
+        if (!isValidDate(row.transaction_date)) {
+          errors.push('Invalid date');
         }
       } else {
         errors.push('Missing transaction_date');
@@ -112,10 +171,8 @@ export default function App() {
         const amount = parseFloat(row.amount);
         if (isNaN(amount)) {
           errors.push('Invalid amount (not numeric)');
-        } else if (amount < 0) {
-          errors.push('Negative amount not allowed');
-        } else if (amount === 0) {
-          errors.push('Zero amount');
+        } else if (amount <= 0) {
+          errors.push('Negative amount');
         }
       } else {
         errors.push('Missing amount');
@@ -133,18 +190,25 @@ export default function App() {
         errors.push(`Invalid payment_mode: ${row.payment_mode}`);
       }
 
-      return {
+      // ===== DUPLICATE DETECTION =====
+      if (row.order_id && duplicateOrderIds.includes(row.order_id)) {
+        errors.push('Duplicate order_id');
+      }
+
+      results.push({
         row: idx + 1,
         ...row,
         errors,
         isValid: errors.length === 0
-      };
+      });
     });
 
     setValidationResults(results);
     setStep('dashboard');
     generateInsights(results);
   };
+
+  // ===== AI INSIGHTS GENERATION =====
 
   const generateInsights = async (results) => {
     setLoadingInsights(true);
@@ -153,19 +217,34 @@ export default function App() {
     const errorCount = results.reduce((sum, r) => sum + r.errors.length, 0);
 
     const errorTypes = {};
+    let duplicateCount = 0;
+    let invalidDateCount = 0;
+
     results.forEach(r => {
       r.errors.forEach(err => {
-        const key = err.split('(')[0].trim();
-        errorTypes[key] = (errorTypes[key] || 0) + 1;
+        if (err.includes('Duplicate')) {
+          duplicateCount += 1;
+        } else if (err.includes('Invalid date')) {
+          invalidDateCount += 1;
+        } else {
+          const key = err.split('(')[0].trim();
+          errorTypes[key] = (errorTypes[key] || 0) + 1;
+        }
       });
     });
+
+    // Find most common error
+    const mostCommonError = Object.entries(errorTypes).sort((a, b) => b[1] - a[1])[0];
 
     const summary = {
       totalRows: total,
       validRows: valid,
       errorCount,
       quality: Math.round((valid / total) * 100),
-      errorBreakdown: errorTypes
+      errorBreakdown: errorTypes,
+      duplicateOrderIds: duplicateCount,
+      invalidDates: invalidDateCount,
+      mostCommonError: mostCommonError ? `${mostCommonError[0]}: ${mostCommonError[1]}` : 'None'
     };
 
     try {
@@ -174,13 +253,27 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: 500,
+          max_tokens: 600,
           messages: [{
             role: 'user',
-            content: `Analyze this data validation summary. Provide insights in 150 words max. Format: 
-**Dataset Quality:** [score]%
-**Major Issues:** 3 bullet points (specific counts)
-**Recommendations:** 3 bullet points
+            content: `You are a data quality analyst. Analyze this transaction validation summary and provide actionable insights in exactly 200 words.
+
+Format your response as:
+
+**Dataset Quality:** [score]% - [Fair/Good/Excellent]
+
+**Key Issues Found:**
+• [Issue 1 with count]
+• [Issue 2 with count]
+• [Issue 3 with count]
+
+**Impact Analysis:**
+[1-2 sentences about data usability]
+
+**Recommendations:**
+• [Specific action 1]
+• [Specific action 2]
+• [Specific action 3]
 
 Data: ${JSON.stringify(summary)}`
           }]
@@ -191,17 +284,108 @@ Data: ${JSON.stringify(summary)}`
       const text = respData.content[0].text;
       setAiInsights(text);
     } catch (error) {
-      const fallback = `**Dataset Quality:** ${summary.quality}%
-**Major Issues:**
-• ${Object.entries(errorTypes).slice(0, 3).map(([k, v]) => `${k}: ${v} errors`).join('\n• ')}
+      const fallback = `**Dataset Quality:** ${summary.quality}% - ${summary.quality >= 80 ? 'Good' : summary.quality >= 60 ? 'Fair' : 'Poor'}
+
+**Key Issues Found:**
+${duplicateCount > 0 ? `• Duplicate order IDs: ${duplicateCount}\n` : ''}${invalidDateCount > 0 ? `• Invalid dates: ${invalidDateCount}\n` : ''}${Object.entries(errorTypes).slice(0, 2).map(([k, v]) => `• ${k}: ${v}`).join('\n')}
+
+**Impact Analysis:**
+${summary.quality >= 80 ? 'Most transactions are valid and ready for processing.' : 'Significant data quality issues need resolution before processing.'}
+
 **Recommendations:**
-• Fix critical missing fields first
-• Standardize phone number formats by country
-• Review amount field for data type consistency`;
+• Fix ${summary.quality < 80 ? 'critical' : 'remaining'} validation errors
+• Remove duplicate transactions
+• Standardize date and phone formats`;
       setAiInsights(fallback);
     }
     setLoadingInsights(false);
   };
+
+  // ===== EXPORT FUNCTIONS =====
+
+  const downloadCleanedCSV = () => {
+    const cleaned = validationResults.filter(r => r.isValid);
+    if (cleaned.length === 0) {
+      alert(`⚠️ No valid rows found!\n\nAll ${validationResults.length} rows have errors.\n\nFix the issues in your CSV and re-upload.`);
+      return;
+    }
+    const headers = Object.keys(cleaned[0]).filter(
+      k => k !== 'errors' && k !== 'isValid' && k !== 'row'
+    );
+    const csv = [
+      headers.join(','),
+      ...cleaned.map(r => headers.map(h => `"${r[h] || ''}"`).join(','))
+    ].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'cleaned_data.csv';
+    a.click();
+  };
+
+  const downloadChunkedCSVs = () => {
+    const cleaned = validationResults.filter(r => r.isValid);
+    if (cleaned.length === 0) {
+      alert('No valid rows to export');
+      return;
+    }
+
+    const headers = Object.keys(cleaned[0]).filter(
+      k => k !== 'errors' && k !== 'isValid' && k !== 'row'
+    );
+
+    // Generate chunks
+    for (let i = 0; i < cleaned.length; i += parseInt(chunkSize)) {
+      const chunk = cleaned.slice(i, i + parseInt(chunkSize));
+      const chunkNum = Math.floor(i / parseInt(chunkSize)) + 1;
+      
+      const csv = [
+        headers.join(','),
+        ...chunk.map(r => headers.map(h => `"${r[h] || ''}"`).join(','))
+      ].join('\n');
+
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `chunk_${chunkNum}.csv`;
+      a.click();
+    }
+  };
+
+  const downloadSampleCSV = () => {
+    const sampleData = [
+      ['order_id', 'product_name', 'phone', 'country', 'payment_mode', 'transaction_date', 'amount'],
+      ['ORD001', 'iPhone 15', '9876543210', 'India', 'Card', '2025-06-01', '79999'],
+      ['ORD002', 'Samsung S24', '9123456789', 'India', 'UPI', '2025-06-02', '69999'],
+      ['ORD003', 'AirPods Pro', '12345', 'India', 'Cash', '2025-06-03', '24999'],
+      ['ORD004', 'MacBook Air', '87654321', 'Singapore', 'Card', '2025-06-04', '99999'],
+      ['ORD005', 'Apple Watch', '9876543210', 'India', '', '2025-06-05', '29999'],
+      ['ORD006', 'Dell XPS', '9123456789', 'India', 'UPI', '2025-02-30', '89999'],
+      ['ORD007', 'Monitor', '12345678', 'Singapore', 'Card', '2025-06-07', '-5000'],
+      ['ORD008', 'Keyboard', '87654321', 'Singapore', 'Cash', '2025-06-08', '4999'],
+      ['ORD009', 'Mouse', '9876543210', 'India', 'UPI', '2025-06-09', '999'],
+      ['ORD009', 'USB Hub', '9876543210', 'India', 'Card', '2025-06-10', '599']
+    ].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+    
+    const blob = new Blob([sampleData], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'sample_transaction_data.csv';
+    a.click();
+  };
+
+  const reset = () => {
+    setData([]);
+    setValidationResults([]);
+    setStep('upload');
+    setSelectedRow(null);
+    setAiInsights('');
+  };
+
+  // ===== RULE MANAGEMENT =====
 
   const addCountryRule = () => {
     if (newCountry && newDigits) {
@@ -223,68 +407,24 @@ Data: ${JSON.stringify(summary)}`
     });
   };
 
-  const downloadCleanedCSV = () => {
-    const cleaned = validationResults.filter(r => r.isValid);
-    if (cleaned.length === 0) {
-      alert(`⚠️ No valid rows found!\n\nAll ${validationResults.length} rows have errors.\n\nFix the issues in your CSV and re-upload.\n\nMost common issues:\n• Missing phone numbers\n• Missing order IDs\n• Missing payment modes`);
-      return;
-    }
-    const headers = Object.keys(cleaned[0]).filter(
-      k => k !== 'errors' && k !== 'isValid' && k !== 'row'
-    );
-    const csv = [
-      headers.join(','),
-      ...cleaned.map(r => headers.map(h => `"${r[h] || ''}"`).join(','))
-    ].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'cleaned_data.csv';
-    a.click();
-    alert('✅ Clean data downloaded successfully!');
-  };
+  // ===== CALCULATIONS =====
 
-  const downloadSampleCSV = () => {
-    const sampleData = [
-      ['order_id', 'product_name', 'phone', 'country', 'payment_mode', 'transaction_date', 'amount'],
-      ['ORD001', 'iPhone 15', '9876543210', 'India', 'Card', '2025-06-01', '79999'],
-      ['ORD002', 'Samsung S24', '9123456789', 'India', 'UPI', '2025-06-02', '69999'],
-      ['ORD003', 'AirPods Pro', '12345', 'India', 'Cash', '2025-06-03', '24999'],  // Invalid phone (5 digits)
-      ['ORD004', 'MacBook Air', '87654321', 'Singapore', 'Card', '2025-06-04', '99999'],
-      ['ORD005', 'Apple Watch', '9876543210', 'India', '', '2025-06-05', '29999'],  // Missing payment_mode
-      ['ORD006', 'Dell XPS', '9123456789', 'India', 'UPI', '32-06-2025', '89999'],  // Invalid date
-      ['ORD007', 'Monitor', '12345678', 'Singapore', 'Card', '2025-06-07', '-5000'],  // Negative amount
-      ['ORD008', 'Keyboard', '87654321', 'Singapore', 'Cash', '2025-06-08', '4999'],
-      ['ORD009', 'Mouse', '987654321', 'India', 'UPI', '2025-06-09', '999'],  // Invalid phone (9 digits)
-    ].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
-    const blob = new Blob([sampleData], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'sample_transaction_data.csv';
-    a.click();
-  };
-
-  const reset = () => {
-    setData([]);
-    setValidationResults([]);
-    setStep('upload');
-    setSelectedRow(null);
-    setAiInsights('');
-  };
-
-  // Calculations
   const total = validationResults.length;
   const valid = validationResults.filter(r => r.isValid).length;
   const errorCount = validationResults.reduce((sum, r) => sum + r.errors.length, 0);
   const quality = total > 0 ? Math.round((valid / total) * 100) : 0;
+  const badge = getQualityBadge(quality);
 
   const errorTypes = {};
+  let duplicateCount = 0;
   validationResults.forEach(r => {
     r.errors.forEach(err => {
-      const key = err.split('(')[0].trim();
-      errorTypes[key] = (errorTypes[key] || 0) + 1;
+      if (err.includes('Duplicate')) {
+        duplicateCount += 1;
+      } else {
+        const key = err.split('(')[0].trim();
+        errorTypes[key] = (errorTypes[key] || 0) + 1;
+      }
     });
   });
 
@@ -293,7 +433,7 @@ Data: ${JSON.stringify(summary)}`
       <header className="header">
         <div className="header-content">
           <h1>💙 Xeno Data Validator</h1>
-          <p>Transaction data validation & processing platform</p>
+          <p>Enterprise-grade transaction validation & processing platform</p>
         </div>
       </header>
 
@@ -398,7 +538,7 @@ Data: ${JSON.stringify(summary)}`
         {/* STEP 3: DASHBOARD */}
         {step === 'dashboard' && (
           <>
-            {/* KPI Cards */}
+            {/* KPI Cards with Badge */}
             <div className="section">
               <h2 className="section-title">Validation Results</h2>
               <div className="kpi-grid">
@@ -417,7 +557,15 @@ Data: ${JSON.stringify(summary)}`
                 </div>
                 <div className="kpi-card">
                   <div className="kpi-label">Quality Score</div>
-                  <div className="kpi-value">{quality}%</div>
+                  <div className="quality-badge">
+                    <span className="badge-emoji">{badge.emoji}</span>
+                    <div>
+                      <div className="badge-percentage">{quality}%</div>
+                      <div className="badge-label" style={{ color: badge.color }}>
+                        {badge.label}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -429,7 +577,7 @@ Data: ${JSON.stringify(summary)}`
                 {loadingInsights ? (
                   <div className="loading">
                     <div className="spinner"></div>
-                    <p>Generating insights...</p>
+                    <p>Analyzing data patterns...</p>
                   </div>
                 ) : (
                   <div className="insights-box">
@@ -445,6 +593,12 @@ Data: ${JSON.stringify(summary)}`
             <div className="section">
               <h3 className="section-title">Error Summary</h3>
               <div className="error-summary">
+                {duplicateCount > 0 && (
+                  <div className="error-card">
+                    <div className="error-label">Duplicate IDs</div>
+                    <div className="error-count">{duplicateCount}</div>
+                  </div>
+                )}
                 {Object.entries(errorTypes).map(([type, count]) => (
                   <div key={type} className="error-card">
                     <div className="error-label">{type}</div>
@@ -459,7 +613,7 @@ Data: ${JSON.stringify(summary)}`
               <div className="section">
                 <div className="inspector-panel">
                   <div className="inspector-header">
-                    <span>Row {selectedRow.row} Details</span>
+                    <span>Transaction #{selectedRow.row}</span>
                     <button
                       className="btn btn-sm"
                       onClick={() => setSelectedRow(null)}
@@ -468,6 +622,9 @@ Data: ${JSON.stringify(summary)}`
                     </button>
                   </div>
                   <div className="inspector-content">
+                    <div style={{ marginBottom: '16px' }}>
+                      <strong style={{ fontSize: '14px', color: '#374151' }}>Transaction Details:</strong>
+                    </div>
                     <div className="field">
                       <strong>Order ID:</strong> {selectedRow.order_id || '(missing)'}
                     </div>
@@ -475,30 +632,40 @@ Data: ${JSON.stringify(summary)}`
                       <strong>Product Name:</strong> {selectedRow.product_name || '(missing)'}
                     </div>
                     <div className="field">
-                      <strong>Phone:</strong> {selectedRow.phone || '(missing)'}
+                      <strong>Country:</strong> {selectedRow.country || '(missing)'}
                     </div>
                     <div className="field">
-                      <strong>Country:</strong> {selectedRow.country || '(missing)'}
+                      <strong>Phone:</strong> {selectedRow.phone || '(missing)'}
                     </div>
                     <div className="field">
                       <strong>Payment Mode:</strong> {selectedRow.payment_mode || '(missing)'}
                     </div>
                     <div className="field">
-                      <strong>Transaction Date:</strong> {selectedRow.transaction_date || '(missing)'}
-                    </div>
-                    <div className="field">
                       <strong>Amount:</strong> {selectedRow.amount || '(missing)'}
                     </div>
+                    <div className="field">
+                      <strong>Transaction Date:</strong> {selectedRow.transaction_date || '(missing)'}
+                    </div>
+                    
                     {selectedRow.errors.length > 0 && (
-                      <div className="field" style={{ marginTop: '12px' }}>
-                        <strong>Issues:</strong>
-                        <div className="error-list">
+                      <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #dbeafe' }}>
+                        <strong style={{ fontSize: '14px', color: '#374151' }}>Validation Issues:</strong>
+                        <div className="error-list" style={{ marginTop: '8px' }}>
                           {selectedRow.errors.map((err, i) => (
-                            <span key={i} className="error-badge">
-                              {err}
-                            </span>
+                            <div key={i} className="error-item">
+                              <span className="error-badge">{err}</span>
+                              <div className="suggestion">
+                                💡 {getSuggestedFix(err)}
+                              </div>
+                            </div>
                           ))}
                         </div>
+                      </div>
+                    )}
+                    
+                    {selectedRow.isValid && (
+                      <div style={{ marginTop: '16px', padding: '12px', background: '#f0fdf4', borderRadius: '6px', color: '#166534' }}>
+                        ✓ This transaction is valid and ready for processing
                       </div>
                     )}
                   </div>
@@ -544,12 +711,33 @@ Data: ${JSON.stringify(summary)}`
               </div>
             </div>
 
-            {/* Download & Reset */}
+            {/* Export Section */}
             <div className="section">
+              <h3 className="section-title">Export Options</h3>
               <div className="controls">
                 <button className="btn btn-success" onClick={downloadCleanedCSV}>
                   📥 Download Clean CSV
                 </button>
+                <button className="btn btn-info" onClick={downloadChunkedCSVs}>
+                  📦 Download Chunked CSVs
+                </button>
+              </div>
+              
+              <div style={{ marginTop: '12px', padding: '12px', background: '#f9fafb', borderRadius: '6px', fontSize: '14px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span>Chunk size (rows):</span>
+                  <input
+                    type="number"
+                    min="5"
+                    max="1000"
+                    value={chunkSize}
+                    onChange={(e) => setChunkSize(e.target.value)}
+                    style={{ width: '60px', padding: '6px', border: '1px solid #d1d5db', borderRadius: '4px' }}
+                  />
+                </label>
+              </div>
+
+              <div className="controls" style={{ marginTop: '12px' }}>
                 <button className="btn btn-secondary" onClick={reset}>
                   🔄 Upload New File
                 </button>
